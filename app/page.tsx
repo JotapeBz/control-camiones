@@ -1,288 +1,101 @@
 "use client";
-
 import { useEffect, useState } from "react";
 import { db } from "@/lib/firebase";
-import { ref, onValue, set, remove, push } from "firebase/database";
+import { ref, onValue } from "firebase/database";
+import Link from "next/link";
 
-// ── Tipos ──────────────────────────────────────────────
-interface Evento {
-  id: string;
-  tipo: string;
-  patente?: string;
-  estado?: string;
-  mensaje?: string;
-  timestamp: number;
-}
+const hoy = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
+const ESPACIOS = Array.from({ length: 10 }, (_, i) => i + 1);
 
-interface Patente {
-  activa: boolean;
-  agregada: number;
-  ultimaEntrada?: number;
-}
-
-interface PatentePendiente {
-  patente: string;
-  estado: string;
-  timestamp: number;
-}
-
-// ── Helpers ────────────────────────────────────────────
-function colorEstado(tipo: string, estado?: string): string {
-  const key = estado ?? tipo;
-  if (key === "permitido" || key === "aprobacion_portero") return "#16a34a";
-  if (key === "denegado" || key === "rechazo_portero")     return "#dc2626";
-  if (key === "pendiente_revision")                         return "#d97706";
-  if (key === "deteccion")                                  return "#2563eb";
-  return "#6b7280";
-}
-
-function etiqueta(tipo: string, estado?: string): string {
-  const key = estado ?? tipo;
-  const map: Record<string, string> = {
-    permitido:          "Acceso permitido",
-    denegado:           "Acceso denegado",
-    pendiente_revision: "Pendiente revisión",
-    aprobacion_portero: "Aprobado por portero",
-    rechazo_portero:    "Rechazado por portero",
-    deteccion:          "Vehículo detectado",
-  };
-  return map[key] ?? key;
-}
-
-function formatFecha(ts: number): string {
-  return new Date(ts).toLocaleString("es-CL", {
-    day: "2-digit", month: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  });
-}
-
-// ── Componente principal ───────────────────────────────
 export default function Dashboard() {
-  const [eventos, setEventos]       = useState<Evento[]>([]);
-  const [autorizadas, setAutorizadas] = useState<Record<string, Patente>>({});
-  const [pendientes, setPendientes]   = useState<Record<string, PatentePendiente>>({});
-  const [nuevaPatente, setNuevaPatente] = useState<string>("");
-  const [error, setError]           = useState<string>("");
+  const [eventos, setEventos]     = useState<any[]>([]);
+  const [pendientes, setPendientes] = useState<Record<string,any>>({});
+  const [agendas, setAgendas]     = useState<Record<string,any>>({});
+  const [camiones, setCamiones]   = useState<number>(0);
 
-  // Eventos en tiempo real
-  useEffect(() => {
-    return onValue(ref(db, "eventos"), (snap) => {
-      const data = snap.val() as Record<string, Omit<Evento, "id">> | null;
-      if (!data) return setEventos([]);
-      const lista = Object.entries(data)
-        .map(([id, v]) => ({ id, ...v }))
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, 20);
-      setEventos(lista);
-    });
-  }, []);
+  useEffect(() => { return onValue(ref(db,"eventos"), snap => { const d=snap.val()||{}; setEventos(Object.values(d).sort((a:any,b:any)=>b.timestamp-a.timestamp)); }); },[]);
+  useEffect(() => { return onValue(ref(db,"patentes_pendientes"), snap => setPendientes(snap.val()||{})); },[]);
+  useEffect(() => { return onValue(ref(db,"agendas"), snap => setAgendas(snap.val()||{})); },[]);
+  useEffect(() => { return onValue(ref(db,"patentes_autorizadas"), snap => setCamiones(Object.keys(snap.val()||{}).length)); },[]);
 
-  // Patentes autorizadas
-  useEffect(() => {
-    return onValue(ref(db, "patentes_autorizadas"), (snap) => {
-      setAutorizadas((snap.val() as Record<string, Patente>) ?? {});
-    });
-  }, []);
+  const ultimosEventos = eventos.slice(0,8);
+  const pendientesN    = Object.keys(pendientes).length;
+  const entradashoy    = eventos.filter((e:any)=>e.estado==="permitido"&&new Date(e.timestamp).toISOString().split("T")[0]===hoy()).length;
+  const espaciosHoy    = ESPACIOS.flatMap(e=>["manana","tarde"].filter(h=>agendas[`${e}_${hoy()}_${h}`])).length;
 
-  // Patentes pendientes
-  useEffect(() => {
-    return onValue(ref(db, "patentes_pendientes"), (snap) => {
-      setPendientes((snap.val() as Record<string, PatentePendiente>) ?? {});
-    });
-  }, []);
-
-  // ── Acciones ──
-  const agregarPatente = async (): Promise<void> => {
-    const p = nuevaPatente.trim().toUpperCase();
-    if (!p) { setError("Ingresa una patente válida"); return; }
-    if (autorizadas[p]) { setError("Esa patente ya está autorizada"); return; }
-    await set(ref(db, `patentes_autorizadas/${p}`), {
-      activa: true,
-      agregada: Date.now(),
-    });
-    setNuevaPatente("");
-    setError("");
+  const colorEvento = (e: any) => {
+    const k = e.estado ?? e.tipo;
+    if (k==="permitido"||k==="aprobacion_portero") return "#16A34A";
+    if (k==="denegado"||k==="rechazo_portero")     return "#DC2626";
+    if (k==="pendiente_revision")                   return "#D97706";
+    return "#6B7280";
   };
 
-  const revocarPatente = async (patente: string): Promise<void> => {
-    await remove(ref(db, `patentes_autorizadas/${patente}`));
-  };
-
-  const aprobarPendiente = async (patente: string): Promise<void> => {
-    await set(ref(db, `patentes_autorizadas/${patente}`), {
-      activa: true,
-      agregada: Date.now(),
-    });
-    await remove(ref(db, `patentes_pendientes/${patente}`));
-    await push(ref(db, "eventos"), {
-      tipo: "aprobacion_portero",
-      patente,
-      timestamp: Date.now(),
-    });
-  };
-
-  const rechazarPendiente = async (patente: string): Promise<void> => {
-    await remove(ref(db, `patentes_pendientes/${patente}`));
-    await push(ref(db, "eventos"), {
-      tipo: "rechazo_portero",
-      patente,
-      timestamp: Date.now(),
-    });
-  };
-
-  const pendientesLista = Object.entries(pendientes);
-  const autorizadasLista = Object.entries(autorizadas);
-
-  // ── Render ──
   return (
-    <main style={{ maxWidth: 960, margin: "0 auto", padding: "2rem 1rem" }}>
-
-      <h1 style={{ fontSize: 22, fontWeight: 500, marginBottom: "0.25rem" }}>
-        Control de acceso — camiones
-      </h1>
-      <p style={{ fontSize: 13, color: "#6b7280", marginBottom: "1.5rem" }}>
-        Dashboard en tiempo real · Firebase Realtime DB
+    <div>
+      <h1 style={{ fontSize: 22, fontWeight: 700, color: "#1E3A5F", marginBottom: 4 }}>Dashboard</h1>
+      <p style={{ color: "#6B7280", fontSize: 13, marginBottom: 24 }}>
+        {new Date().toLocaleDateString("es-CL", { weekday:"long", year:"numeric", month:"long", day:"numeric" })}
       </p>
 
-      {/* ── Pendientes ── */}
-      {pendientesLista.length > 0 && (
-        <section style={{
-          background: "#fffbeb", border: "1px solid #fbbf24",
-          borderRadius: 10, padding: "1rem 1.25rem", marginBottom: "1.5rem",
-        }}>
-          <h2 style={{ fontSize: 15, fontWeight: 500, color: "#92400e", marginBottom: "0.75rem" }}>
-            Patentes pendientes de revisión ({pendientesLista.length})
-          </h2>
-          {pendientesLista.map(([pat, data]) => (
-            <div key={pat} style={{
-              display: "flex", alignItems: "center", flexWrap: "wrap",
-              gap: 10, padding: "8px 0", borderBottom: "1px solid #fde68a",
-            }}>
-              <span style={{ fontFamily: "monospace", fontWeight: 600, fontSize: 15 }}>{pat}</span>
-              <span style={{ fontSize: 12, color: "#78716c" }}>{formatFecha(data.timestamp)}</span>
-              <button onClick={() => aprobarPendiente(pat)} style={btnStyle("#16a34a")}>
-                Aprobar
-              </button>
-              <button onClick={() => rechazarPendiente(pat)} style={btnStyle("#dc2626")}>
-                Rechazar
-              </button>
+      {/* KPIs */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:16, marginBottom:28 }}>
+        {[
+          { label:"Camiones autorizados", valor:camiones,    color:"#2563EB", bg:"#DBEAFE", href:"/camiones"  },
+          { label:"Pendientes revisión",  valor:pendientesN, color:"#D97706", bg:"#FEF3C7", href:"/camiones"  },
+          { label:"Entradas hoy",         valor:entradashoy, color:"#16A34A", bg:"#DCFCE7", href:"/historial" },
+          { label:"Espacios agendados",   valor:espaciosHoy, color:"#7C3AED", bg:"#EDE9FE", href:"/espacios"  },
+        ].map(k=>(
+          <Link key={k.label} href={k.href} style={{ textDecoration:"none" }}>
+            <div style={{ background:k.bg, borderRadius:10, padding:"16px 20px", cursor:"pointer" }}>
+              <p style={{ fontSize:12, color:k.color, fontWeight:600, margin:"0 0 4px" }}>{k.label}</p>
+              <p style={{ fontSize:34, fontWeight:700, color:k.color, margin:0 }}>{k.valor}</p>
+            </div>
+          </Link>
+        ))}
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:24 }}>
+        {/* Eventos recientes */}
+        <div style={{ background:"#fff", borderRadius:10, border:"1px solid #E5E7EB", overflow:"hidden" }}>
+          <div style={{ padding:"14px 16px", borderBottom:"1px solid #F3F4F6", display:"flex", justifyContent:"space-between" }}>
+            <span style={{ fontWeight:700, fontSize:14, color:"#1E3A5F" }}>Eventos recientes</span>
+            <Link href="/historial" style={{ fontSize:12, color:"#2563EB" }}>Ver todo</Link>
+          </div>
+          {ultimosEventos.map((e:any)=>(
+            <div key={e.id??e.timestamp} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 16px", borderBottom:"1px solid #F9FAFB" }}>
+              <span style={{ width:8, height:8, borderRadius:"50%", background:colorEvento(e), display:"inline-block", flexShrink:0 }}/>
+              <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:13 }}>{e.patente??"—"}</span>
+              <span style={{ fontSize:12, color:"#6B7280", flex:1 }}>{e.estado??e.tipo}</span>
+              <span style={{ fontSize:11, color:"#9CA3AF" }}>{new Date(e.timestamp).toLocaleTimeString("es-CL")}</span>
             </div>
           ))}
-        </section>
-      )}
+        </div>
 
-      {/* ── Grid principal ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
-
-        {/* Eventos */}
-        <section>
-          <h2 style={{ fontSize: 15, fontWeight: 500, marginBottom: "0.75rem" }}>
-            Eventos en tiempo real
-          </h2>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
-            {eventos.length === 0 && (
-              <p style={{ padding: "1.25rem", color: "#9ca3af", fontSize: 13, textAlign: "center" }}>
-                Sin eventos aún
-              </p>
-            )}
-            {eventos.map((e) => (
-              <div key={e.id} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "10px 14px", borderBottom: "1px solid #f3f4f6", background: "#fff",
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{
-                    width: 9, height: 9, borderRadius: "50%",
-                    background: colorEstado(e.tipo, e.estado),
-                    display: "inline-block", flexShrink: 0,
-                  }} />
-                  <span style={{ fontFamily: "monospace", fontWeight: 600, fontSize: 14 }}>
-                    {e.patente ?? "—"}
-                  </span>
-                  <span style={{ fontSize: 12, color: "#6b7280" }}>
-                    {etiqueta(e.tipo, e.estado)}
-                  </span>
+        {/* Espacios hoy */}
+        <div style={{ background:"#fff", borderRadius:10, border:"1px solid #E5E7EB", overflow:"hidden" }}>
+          <div style={{ padding:"14px 16px", borderBottom:"1px solid #F3F4F6", display:"flex", justifyContent:"space-between" }}>
+            <span style={{ fontWeight:700, fontSize:14, color:"#1E3A5F" }}>Espacios hoy</span>
+            <Link href="/espacios" style={{ fontSize:12, color:"#2563EB" }}>Gestionar</Link>
+          </div>
+          <div style={{ padding:16, display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:8 }}>
+            {ESPACIOS.map(e=>{
+              const am=agendas[`${e}_${hoy()}_manana`];
+              const pm=agendas[`${e}_${hoy()}_tarde`];
+              return (
+                <div key={e} style={{ borderRadius:8, border:"1px solid #E5E7EB", padding:8, textAlign:"center" }}>
+                  <p style={{ fontWeight:700, fontSize:13, color:"#374151", margin:"0 0 4px" }}>E{e}</p>
+                  <div style={{ fontSize:10, fontWeight:600, color:am?"#991B1B":"#166534", background:am?"#FEE2E2":"#DCFCE7", borderRadius:4, padding:"2px 0", marginBottom:3 }}>AM {am?am.patente:"libre"}</div>
+                  <div style={{ fontSize:10, fontWeight:600, color:pm?"#991B1B":"#166534", background:pm?"#FEE2E2":"#DCFCE7", borderRadius:4, padding:"2px 0" }}>PM {pm?pm.patente:"libre"}</div>
                 </div>
-                <span style={{ fontSize: 11, color: "#9ca3af", whiteSpace: "nowrap" }}>
-                  {formatFecha(e.timestamp)}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        </section>
-
-        {/* Patentes autorizadas */}
-        <section>
-          <h2 style={{ fontSize: 15, fontWeight: 500, marginBottom: "0.75rem" }}>
-            Patentes autorizadas
-          </h2>
-
-          {/* Input agregar */}
-          <div style={{ display: "flex", gap: 8, marginBottom: "0.75rem" }}>
-            <input
-              value={nuevaPatente}
-              onChange={(e) => setNuevaPatente(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === "Enter" && agregarPatente()}
-              placeholder="Ej: ABC123"
-              maxLength={8}
-              style={{
-                flex: 1, padding: "8px 12px", borderRadius: 8,
-                border: "1px solid #d1d5db", fontFamily: "monospace",
-                fontSize: 14, textTransform: "uppercase", outline: "none",
-              }}
-            />
-            <button onClick={agregarPatente} style={btnStyle("#2563eb")}>
-              Agregar
-            </button>
-          </div>
-
-          {error && (
-            <p style={{ fontSize: 12, color: "#dc2626", marginBottom: "0.5rem" }}>{error}</p>
-          )}
-
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
-            {autorizadasLista.length === 0 && (
-              <p style={{ padding: "1.25rem", color: "#9ca3af", fontSize: 13, textAlign: "center" }}>
-                Sin patentes registradas
-              </p>
-            )}
-            {autorizadasLista.map(([pat, data]) => (
-              <div key={pat} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "10px 14px", borderBottom: "1px solid #f3f4f6", background: "#fff",
-              }}>
-                <div>
-                  <span style={{ fontFamily: "monospace", fontWeight: 600, fontSize: 14 }}>{pat}</span>
-                  {data.ultimaEntrada && (
-                    <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>
-                      Última entrada: {formatFecha(data.ultimaEntrada)}
-                    </span>
-                  )}
-                </div>
-                <button
-                  onClick={() => revocarPatente(pat)}
-                  style={{
-                    background: "transparent", color: "#dc2626",
-                    border: "1px solid #fca5a5", borderRadius: 6,
-                    padding: "3px 10px", cursor: "pointer", fontSize: 12,
-                  }}
-                >
-                  Revocar
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
+        </div>
       </div>
-    </main>
+    </div>
   );
-}
-
-// ── Estilos reutilizables ──────────────────────────────
-function btnStyle(bg: string): React.CSSProperties {
-  return {
-    background: bg, color: "#fff", border: "none",
-    borderRadius: 6, padding: "5px 14px",
-    cursor: "pointer", fontSize: 13, fontWeight: 500,
-  };
 }
